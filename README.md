@@ -17,6 +17,7 @@ conda env create -f 3D_datagen/infinigen/env.yml
 conda env create -f 3D_datagen/zeroverse/env.yml
 conda env create -f 3D_datagen/shapegen/env.yml
 ```
+---
 
 ## Infinigen
 
