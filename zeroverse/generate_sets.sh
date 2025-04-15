@@ -41,7 +41,7 @@ do
       SEED=$(( RANDOM ))
       TEXTURE_SEED=$(( RANDOM ))  # Added random texture seed
       
-      python /home/vaclav_knapp/zeroverse/create_shape_blend_2.py --num_shapes $NUM_SHAPES \
+      python 3D_datagen/zeroverse/gen_shapes.py --num_shapes $NUM_SHAPES \
       --output_dir "$CONFIG_OUTPUT_DIR" \
       --shape_counts "$SHAPE_COUNTS" \
       --seed $SEED \
