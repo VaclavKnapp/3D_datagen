@@ -43,7 +43,7 @@ mv 3D_datagen/infinigen/render.sh infinigen/.
 #### 1️⃣ Generate .blend Files
 ```bash
 cd infinigen
-python infinigen_examples/gen_assests_blend.py -f 3D_datagen/infinigen/factories.txt -o 3D_datagen/infinigen_blend -n 10 --texture_folder 3D_datagen/textures
+python infinigen_examples/gen_assests_blend.py -f 3D_datagen/infinigen/factories.txt -o 3D_datagen/infinigen_blend -n 10
 ```
 
 #### 2️⃣ Render Images
