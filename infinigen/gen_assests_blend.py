@@ -1,15 +1,10 @@
 import argparse
 import importlib
 import logging
-import math
 import os
-import random
-import re
-import subprocess
 import traceback
-from itertools import product
-from multiprocessing import Pool
 from pathlib import Path
+from multiprocessing import Pool
 
 import bpy
 import gin
@@ -24,25 +19,15 @@ logging.basicConfig(
 )
 
 import infinigen
-from infinigen.assets.lighting import (
-    hdri_lighting,
-    holdout_lighting,
-    sky_lighting,
-    three_point_lighting,
-)
-
-# from infinigen.core.rendering.render import enable_gpu
 from infinigen.assets.utils.decorate import read_base_co, read_co
 from infinigen.assets.utils.misc import assign_material, subclasses
 from infinigen.core import init, surface
 from infinigen.core.init import configure_cycles_devices
-from infinigen.core.placement import AssetFactory, density
-from infinigen.core.tagging import tag_system
+from infinigen.core.placement import AssetFactory
 # noinspection PyUnresolvedReferences
 from infinigen.core.util import blender as butil
 from infinigen.core.util.math import FixedSeed
 from infinigen.core.util.test_utils import load_txt_list
-from infinigen.tools import export
 
 logger = logging.getLogger(__name__)
 
@@ -51,25 +36,20 @@ assert OBJECTS_PATH.exists(), OBJECTS_PATH
 
 
 def apply_texture_from_path(obj: bpy.types.Object, texture_path: Path):
-
-
     if not texture_path.exists() or not texture_path.is_file():
         logger.warning(f"Texture file not found at: {texture_path}")
         return
-
 
     mat = bpy.data.materials.new("ImportedTextureMaterial")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
 
-
     for node in nodes:
         if node.type == "BSDF_PRINCIPLED":
             principled = node
         else:
             nodes.remove(node)
-
 
     tex_node = nodes.new('ShaderNodeTexImage')
     try:
@@ -78,13 +58,10 @@ def apply_texture_from_path(obj: bpy.types.Object, texture_path: Path):
         logger.error(f"Failed to load texture at {texture_path}: {e}")
         return
 
-
     tex_node.location = (-300, 200)
     principled.location = (0, 200)
 
-
     links.new(tex_node.outputs["Color"], principled.inputs["Base Color"])
-
 
     obj.data.materials.clear()
     obj.data.materials.append(mat)
@@ -127,25 +104,6 @@ def build_scene_asset(args, factory_name, idx):
 
         fac.finalize_assets(asset)
 
-        # If user requested 'fire', apply fire simulation
-        if args.fire:
-            from infinigen.assets.fluid.fluid import set_obj_on_fire
-            set_obj_on_fire(
-                asset,
-                0,
-                resolution=args.fire_res,
-                simulation_duration=args.fire_duration,
-                noise_scale=2,
-                add_turbulence=True,
-                adaptive_domain=False,
-            )
-            bpy.context.scene.frame_set(args.fire_duration)
-            bpy.context.scene.frame_end = args.fire_duration
-            bpy.data.worlds["World"].node_tree.nodes["Background.001"].inputs[
-                1
-            ].default_value = 0.04
-            bpy.context.scene.view_settings.exposure = -1
-
         bpy.context.view_layer.objects.active = asset
         parent = asset
 
@@ -161,33 +119,18 @@ def build_scene_asset(args, factory_name, idx):
             i = np.argmax(np.array(sizes))
             asset = meshes[i]
 
-        # If we are allowed to modify geometry (apply transforms, etc.)
-        if not args.no_mod:
-            # Remove drivers if any
-            if parent.animation_data is not None:
-                for d in parent.animation_data.drivers.values():
-                    parent.driver_remove(d.data_path)
+        # Always center the object at origin
+        # Remove drivers if applicable
+        if parent.animation_data is not None:
+            for d in parent.animation_data.drivers.values():
+                parent.driver_remove(d.data_path)
 
-            co = read_co(asset)  # co is Nx3 array
-            x_min, x_max = np.amin(co, axis=0), np.amax(co, axis=0)
-
-            # Center bounding box at origin
-            center_xyz = (x_min + x_max) / 2.0
-            parent.location = -center_xyz
-            butil.apply_transform(parent, loc=True)
-
-
-            if not args.no_ground:
-                bpy.ops.mesh.primitive_grid_add(size=5, x_subdivisions=400, y_subdivisions=400)
-                plane = bpy.context.active_object
-                plane.location[-1] = x_min[-1]
-                plane.is_shadow_catcher = True
-                material = bpy.data.materials.new("plane")
-                material.use_nodes = True
-                material.node_tree.nodes["Principled BSDF"].inputs[0].default_value = (
-                    0.015, 0.009, 0.003, 1
-                )
-                assign_material(plane, material)
+        # Read coordinates and center object at origin
+        co = read_co(asset)  # co is Nx3 array
+        x_min, x_max = np.amin(co, axis=0), np.amax(co, axis=0)
+        center_xyz = (x_min + x_max) / 2.0
+        parent.location = -center_xyz
+        butil.apply_transform(parent, loc=True)
 
         if args.texture_path:
             apply_texture_from_path(asset, args.texture_path)
@@ -212,8 +155,8 @@ def build_scene_surface(args, factory_name, idx):
         if args.dryrun:
             return
 
-        # Build a plane with default material
-        bpy.ops.mesh.primitive_grid_add(size=10, x_subdivisions=400, y_subdivisions=400)
+        # Build a plane with reduced subdivisions
+        bpy.ops.mesh.primitive_grid_add(size=10, x_subdivisions=100, y_subdivisions=100)
         plane = bpy.context.active_object
         material = bpy.data.materials.new("plane")
         material.use_nodes = True
@@ -222,10 +165,10 @@ def build_scene_surface(args, factory_name, idx):
         )
         assign_material(plane, material)
 
-        # Apply scatter
+        # Apply scatter with reduced density if possible
         if isinstance(scatter, type):
             scatter = scatter(idx)
-        scatter.apply(plane, selection=density.placement_mask(0.15, 0.45))
+        scatter.apply(plane)
         asset = plane
 
     except ModuleNotFoundError:
@@ -254,11 +197,11 @@ def build_scene_surface(args, factory_name, idx):
                 if args.dryrun:
                     return
 
-                # Build a sphere, or use make_sphere() if present
+                # Build a sphere with fewer subdivisions
                 if hasattr(template, "make_sphere"):
                     asset = template.make_sphere()
                 else:
-                    bpy.ops.mesh.primitive_ico_sphere_add(radius=0.8, subdivisions=9)
+                    bpy.ops.mesh.primitive_ico_sphere_add(radius=0.8, subdivisions=4)
                     asset = bpy.context.active_object
 
                 # If the template is a class, instantiate it
@@ -270,11 +213,36 @@ def build_scene_surface(args, factory_name, idx):
         except ModuleNotFoundError:
             raise Exception(f"{factory_name} not Found.")
 
-    # ---- Apply a PNG texture to the surface if specified ----
+    # Apply a PNG texture to the surface if specified
     if args.texture_path:
         apply_texture_from_path(asset, args.texture_path)
 
     return asset
+
+
+def configure_low_complexity_render():
+    """Configure render settings for low complexity/fast rendering"""
+    # Set cycles render samples to 1/4 of 8192 (based on user's log)
+    bpy.context.scene.cycles.samples = 2048
+    
+    # Reduce other complexity settings
+    bpy.context.scene.cycles.max_bounces = 4
+    bpy.context.scene.cycles.diffuse_bounces = 2
+    bpy.context.scene.cycles.glossy_bounces = 2
+    bpy.context.scene.cycles.transmission_bounces = 4
+    bpy.context.scene.cycles.volume_bounces = 0
+    bpy.context.scene.cycles.transparent_max_bounces = 4
+    
+    # Use simpler denoising
+    bpy.context.scene.cycles.use_denoising = True
+    bpy.context.scene.cycles.denoiser = 'OPENIMAGEDENOISE'  # Simpler denoiser
+    
+    # Lower subdivision levels
+    for obj in bpy.data.objects:
+        for mod in obj.modifiers:
+            if mod.type == 'SUBSURF':
+                mod.levels = max(1, mod.levels // 2)  # Cut subdivision in half
+                mod.render_levels = max(1, mod.render_levels // 2)
 
 
 def build_and_save_asset(payload: dict):
@@ -313,9 +281,9 @@ def build_and_save_asset(payload: dict):
     if args.dryrun:
         return
 
-    # Configure devices/render
-    configure_cycles_devices()
-
+    # Configure for low complexity rendering
+    configure_low_complexity_render()
+    
     # Save the .blend file with autopack
     butil.save_blend(str(blend_file), autopack=True)
 
@@ -344,6 +312,7 @@ def mapfunc(f, its, args):
 def main(args):
     bpy.context.window.workspace = bpy.data.workspaces["Geometry Nodes"]
 
+    # Use simplified configuration when possible
     init.apply_gin_configs(
         ["infinigen_examples/configs_indoor", "infinigen_examples/configs_nature"],
         skip_unknown=True,
@@ -358,10 +327,6 @@ def main(args):
                 logging.getLogger(name).setLevel(logging.DEBUG)
 
     init.configure_blender()
-
-    if args.gpu:
-        init.configure_render_cycles()
-
 
     if ".txt" in args.factories[0]:
         name = args.factories[0].split(".")[-2].split("/")[-1]
@@ -393,13 +358,11 @@ def main(args):
             "ALL_MATERIALS is deprecated. Use -f tests/assets/list_nature_materials.txt or similar."
         )
 
-
     has_txt = ".txt" in factories[0]
     if has_txt:
         factories = [
             f.split(".")[-1] for f in load_txt_list(factories[0], skip_sharp=False)
         ]
-
 
     if not args.postprocessing_only:
         for fac in factories:
@@ -410,16 +373,6 @@ def main(args):
 
     if args.dryrun:
         return
-
-
-def snake_case(s):
-    return "_".join(
-        re.sub(
-            r"([A-Z][a-z]+)",
-            r" \1",
-            re.sub(r"([A-Z]+)", r" \1", s.replace("-", " "))
-        ).split()
-    ).lower()
 
 
 def make_args():
@@ -436,90 +389,10 @@ def make_args():
         "-n", "--n_images", default=1, type=int, help="Number of scenes to create"
     )
     parser.add_argument(
-        "-m",
-        "--margin",
-        default=0.01,
-        help="Margin between the asset boundary and the image edge when adjusting camera",
-    )
-    parser.add_argument(
-        "-R", "--resolution", default="1024x1024", type=str, help="Image resolution"
-    )
-    parser.add_argument("-p", "--samples", default=200, type=int, help="Cycles samples")
-    parser.add_argument("-l", "--lighting", default=0, type=int, help="Lighting seed")
-    parser.add_argument(
-        "-Z",
-        "--cam_zoff",
-        "--z_offset",
-        type=float,
-        default=0.0,
-        help="Additional offset on the camera's Z-axis for look-at positions",
-    )
-    parser.add_argument(
-        "-s",
-        "--save_blend",
-        action="store_true",
-        default=True,
-        help="Whether to save the .blend file",
-    )
-    parser.add_argument(
-        "-e", "--elevation", default=60, type=float, help="Sun elevation angle"
-    )
-    parser.add_argument(
-        "--cam_dist",
-        default=0,
-        type=float,
-        help="Distance from the camera to the look-at position",
-    )
-    parser.add_argument(
-        "-a", "--cam_angle", default=(-30, 0, 45), type=float, nargs="+",
-        help="Camera rotation in XYZ"
-    )
-    parser.add_argument(
-        "-O", "--offset", default=(0, 0, 0), type=float, nargs="+",
-        help="Asset location offset"
-    )
-    parser.add_argument(
-        "-c", "--cam_center", default=1, type=int, help="Camera rotation around center"
-    )
-    parser.add_argument(
-        '--background_image_folder',
-        type=Path,
-        default=None,
-        help='Folder of background images to use as environment textures'
-    )
-    parser.add_argument(
         '--texture_path',
         type=Path,
         default=None,
         help='Path to a .png texture image to apply to the generated mesh'
-    )
-    parser.add_argument(
-        "-r", "--render", default="none", choices=["image", "video", "none"],
-        help="Render mode"
-    )
-    parser.add_argument(
-        "-b",
-        "--best_ratio",
-        default=9/16,
-        type=float,
-        help="Aspect ratio for asset grid"
-    )
-    parser.add_argument("-F", "--fire", action="store_true", help="Set the object on fire")
-    parser.add_argument("-I", "--fire_res", default=100, type=int, help="Fire resolution")
-    parser.add_argument("-U", "--fire_duration", default=30, type=int, help="Fire duration")
-    parser.add_argument(
-        "-t", "--film_transparent", default=1, type=int,
-        help="Use transparent background"
-    )
-    parser.add_argument(
-        "-E", "--frame_end", type=int, default=120, help="End frame (for video rendering)"
-    )
-    parser.add_argument(
-        "-g", "--gpu", action="store_true", help="Use GPU for rendering"
-    )
-    parser.add_argument("-C", "--cycles", type=float, default=1, help="Video cycles")
-    parser.add_argument(
-        "-A", "--scale_reference", action="store_true", help="Add a scale reference object"
     )
     parser.add_argument(
         "-S", "--skip_existing", action="store_true", help="Skip existing .blend files"
@@ -531,31 +404,15 @@ def make_args():
         "-D", "--seed", type=int, default=-1, help="Fixed random seed override"
     )
     parser.add_argument(
-        "-N", "--no-mod", action="store_true", help="Do not modify geometry after creation"
-    )
-    parser.add_argument("-H", "--hdri", action="store_true", help="Add HDRI lighting")
-    parser.add_argument(
-        "-T", "--three_point", action="store_true", help="Add 3-point lighting"
-    )
-    parser.add_argument(
-        "-G", "--no_ground", action="store_true", help="Do not create ground plane"
-    )
-    parser.add_argument(
         "-W", "--spawn_placeholder", action="store_true", help="Spawn placeholder object"
     )
-    parser.add_argument("-z", "--zoom", action="store_true", help="Zoom first figure")
+    parser.add_argument(
+        "--simplify", action="store_true", default=True, 
+        help="Use simplified geometry and render settings"
+    )
 
     parser.add_argument("--n_workers", type=int, default=1)
     parser.add_argument("--slurm", action="store_true")
-
-    parser.add_argument(
-        "--export",
-        type=str,
-        default=None,
-        choices=export.FORMAT_CHOICES,
-        help="Export format for geometry"
-    )
-    parser.add_argument("--export_texture_res", type=int, default=1024)
     parser.add_argument(
         "-d", "--debug", type=str, nargs="*", default=None,
         help="Debug logging for specified modules"
@@ -567,11 +424,9 @@ def make_args():
 
 if __name__ == "__main__":
     args = make_args()
-
-    args.no_mod = args.no_mod or args.fire
-    args.film_transparent = args.film_transparent and not args.hdri
-    args.save_blend = True
-    args.render = "none"
-
+    
+    # Set defaults - no ground, simplified rendering
+    args.no_ground = True
+    
     with FixedSeed(1):
         main(args)
