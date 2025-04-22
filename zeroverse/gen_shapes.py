@@ -201,114 +201,100 @@ class Shape(object):
 
         # Create materials and assign to faces
         if texture_images and texture_rng:
-            # Create materials
-            materials = []
+            # Create a mapping from face to subshape index
+            face_to_subshape = np.zeros(len(self.faces), dtype=int)
             
-            # Check if we have material sub-shape mapping
-            if hasattr(self, 'materialSubShapeIdx') and self.materialSubShapeIdx:
-                num_subshapes = max(self.materialSubShapeIdx) + 1
-                subshape_texture_paths = {}
-                
-                # If there are fewer textures than sub-shapes, we'll need to reuse some
-                if len(texture_images) < num_subshapes:
-                    # Make a copy to avoid changing the original
-                    available_textures = list(texture_images)
-                    
-                    # Randomly select textures for each sub-shape, without replacement if possible
-                    for subshape_idx in range(num_subshapes):
-                        if available_textures:
-                            texture_image_path = texture_rng.choice(available_textures)
-                            available_textures.remove(texture_image_path)
-                        else:
-                            # If we've used all textures, start reusing them
-                            texture_image_path = texture_rng.choice(texture_images)
-                        subshape_texture_paths[subshape_idx] = texture_image_path
-                else:
-                    # We have enough textures for each sub-shape
-                    # Choose textures without replacement to ensure each subshape gets a unique texture
-                    selected_indices = texture_rng.choice(len(texture_images), num_subshapes, replace=False)
-                    for subshape_idx in range(num_subshapes):
-                        subshape_texture_paths[subshape_idx] = texture_images[selected_indices[subshape_idx]]
-                
-                for mat_idx, mat_name in enumerate(self.matNames):
-                    if mat_idx < len(self.materialSubShapeIdx):
-                        subshape_idx = self.materialSubShapeIdx[mat_idx]
-                        texture_image_path = subshape_texture_paths[subshape_idx]
-                    else:
-                        # Fallback if materialSubShapeIdx isn't fully populated
-                        texture_image_path = texture_rng.choice(texture_images)
-
-                    # Create a new material
-                    mat = bpy.data.materials.new(name=f"Material_{mat_idx}")
-                    mat.use_nodes = True
-                    bsdf = mat.node_tree.nodes.get("Principled BSDF")
-                    if bsdf is None:
-                        bsdf = mat.node_tree.nodes.new(type='ShaderNodeBsdfPrincipled')
-
-                    # Add an image texture node
-                    tex_image_node = mat.node_tree.nodes.new('ShaderNodeTexImage')
-                    try:
-                        tex_image_node.image = bpy.data.images.load(texture_image_path)
-                    except:
-                        print(f"Failed to load image {texture_image_path}")
-                        continue
-
-                    # Connect the image texture node to the BSDF node
-                    mat.node_tree.links.new(bsdf.inputs['Base Color'], tex_image_node.outputs['Color'])
-
-                    materials.append(mat)
-
-                    # Assign material to the object
-                    obj.data.materials.append(mat)
-            else:
-                # Fallback if materialSubShapeIdx doesn't exist - assign random textures
-                for mat_idx, mat_name in enumerate(self.matNames):
-                    texture_image_path = texture_rng.choice(texture_images)
-                    
-                    # Create a new material
-                    mat = bpy.data.materials.new(name=f"Material_{mat_idx}")
-                    mat.use_nodes = True
-                    bsdf = mat.node_tree.nodes.get("Principled BSDF")
-                    if bsdf is None:
-                        bsdf = mat.node_tree.nodes.new(type='ShaderNodeBsdfPrincipled')
-
-                    # Add an image texture node
-                    tex_image_node = mat.node_tree.nodes.new('ShaderNodeTexImage')
-                    try:
-                        tex_image_node.image = bpy.data.images.load(texture_image_path)
-                    except:
-                        print(f"Failed to load image {texture_image_path}")
-                        continue
-
-                    # Connect the image texture node to the BSDF node
-                    mat.node_tree.links.new(bsdf.inputs['Base Color'], tex_image_node.outputs['Color'])
-
-                    materials.append(mat)
-
-                    # Assign material to the object
-                    obj.data.materials.append(mat)
-        else:
-            # Create a default material
-            mat = bpy.data.materials.new(name="Default_Material")
-            obj.data.materials.append(mat)
-
-        # Assign materials to faces
-        # Create a list of material indices for each face
-        material_indices = [0] * len(mesh.polygons)  # Default to first material
-
-        if texture_images and texture_rng:
+            # Fill the face_to_subshape mapping
             for mat_idx in range(len(self.matNames)):
-                # Get the start index of faces for this material
+                # Get the corresponding subshape index
+                if hasattr(self, 'materialSubShapeIdx') and mat_idx < len(self.materialSubShapeIdx):
+                    subshape_idx = self.materialSubShapeIdx[mat_idx]
+                else:
+                    subshape_idx = 0  # Default if not specified
+                    
+                # Get the start and end indices for faces with this material
                 start_idx = self.matStartId[mat_idx]
-                # Get the end index
                 if mat_idx < len(self.matStartId) - 1:
                     end_idx = self.matStartId[mat_idx + 1]
                 else:
                     end_idx = len(self.faces)
-                # Assign material index to faces in this range
+                    
+                # Assign subshape index to these faces
                 for face_idx in range(start_idx, end_idx):
-                    if face_idx < len(material_indices):
-                        material_indices[face_idx] = mat_idx
+                    if face_idx < len(face_to_subshape):
+                        face_to_subshape[face_idx] = subshape_idx
+            
+            # Get unique subshape indices
+            unique_subshapes = sorted(set(face_to_subshape))
+            num_subshapes = len(unique_subshapes)
+            
+            # Create texture mapping for each subshape
+            subshape_texture_paths = {}
+            
+            # If there are fewer textures than sub-shapes, we'll need to reuse some
+            if len(texture_images) < num_subshapes:
+                # Make a copy to avoid changing the original
+                available_textures = list(texture_images)
+                
+                # Randomly select textures for each sub-shape, without replacement if possible
+                for subshape_idx in unique_subshapes:
+                    if available_textures:
+                        texture_image_path = texture_rng.choice(available_textures)
+                        available_textures.remove(texture_image_path)
+                    else:
+                        # If we've used all textures, start reusing them
+                        texture_image_path = texture_rng.choice(texture_images)
+                    subshape_texture_paths[subshape_idx] = texture_image_path
+            else:
+                # We have enough textures for each sub-shape
+                # Choose textures without replacement to ensure each subshape gets a unique texture
+                selected_indices = texture_rng.choice(len(texture_images), num_subshapes, replace=False)
+                for i, subshape_idx in enumerate(unique_subshapes):
+                    subshape_texture_paths[subshape_idx] = texture_images[selected_indices[i]]
+            
+            # Create materials for each subshape
+            materials = []
+            subshape_to_material = {}  # Maps subshape index to material index
+            
+            # Create a material for each unique subshape
+            for subshape_idx in unique_subshapes:
+                texture_image_path = subshape_texture_paths[subshape_idx]
+                
+                # Create a new material
+                material_index = len(materials)
+                mat = bpy.data.materials.new(name=f"Material_Shape_{subshape_idx}")
+                mat.use_nodes = True
+                bsdf = mat.node_tree.nodes.get("Principled BSDF")
+                if bsdf is None:
+                    bsdf = mat.node_tree.nodes.new(type='ShaderNodeBsdfPrincipled')
+
+                # Add an image texture node
+                tex_image_node = mat.node_tree.nodes.new('ShaderNodeTexImage')
+                try:
+                    tex_image_node.image = bpy.data.images.load(texture_image_path)
+                except:
+                    print(f"Failed to load image {texture_image_path}")
+                    continue
+
+                # Connect the image texture node to the BSDF node
+                mat.node_tree.links.new(bsdf.inputs['Base Color'], tex_image_node.outputs['Color'])
+
+                materials.append(mat)
+                subshape_to_material[subshape_idx] = material_index
+
+                # Assign material to the object
+                obj.data.materials.append(mat)
+            
+            # Now assign material indices to faces based on subshape
+            material_indices = [0] * len(mesh.polygons)
+            for face_idx, subshape_idx in enumerate(face_to_subshape):
+                if face_idx < len(material_indices):
+                    material_indices[face_idx] = subshape_to_material[subshape_idx]
+        else:
+            # Create a default material
+            mat = bpy.data.materials.new(name="Default_Material")
+            obj.data.materials.append(mat)
+            material_indices = [0] * len(mesh.polygons)
 
         # Now assign material indices to the mesh polygons
         for poly, mat_idx in zip(mesh.polygons, material_indices):
@@ -436,7 +422,10 @@ class Shape(object):
         curFN = len(self.faces)
         if curPN == 0:
             self.points = np.copy(otherShape.points)
+            
+            # Just copy UVs for the first shape
             self.uvs = np.copy(otherShape.uvs)
+            
             self.faces = np.copy(otherShape.faces)
             self.facesUV = np.copy(otherShape.facesUV)
             self.matNames += otherShape.matNames
@@ -445,12 +434,34 @@ class Shape(object):
             self.materialSubShapeIdx = [shape_id] * num_new_mats  # Initialize the list
         else:
             self.points = np.vstack([self.points, otherShape.points])
-            self.uvs = np.vstack([self.uvs, otherShape.uvs])
+            
+            # Transform UVs to avoid overlaps between sub-shapes
+            # Create a unique UV offset based on shape_id to avoid texture bleeding
+            uv_offset_x = (shape_id % 5) * 0.2  # 5 columns of UV space
+            uv_offset_y = (shape_id // 5) * 0.2  # Use integer division for rows
+            uv_offset = np.array([uv_offset_x, uv_offset_y])
+            
+            # Copy and modify UVs for additional shapes
+            new_uvs = otherShape.uvs.copy()
+            
+            # Scale UVs to fit within their allocated space (80% of their region)
+            new_uvs = new_uvs * 0.18  # Scale down to 90% of the 0.2 space
+            
+            # Offset UVs to their allocated region
+            new_uvs = new_uvs + uv_offset
+            
+            # Stack with existing UVs
+            self.uvs = np.vstack([self.uvs, new_uvs])
+            
             self.faces = np.vstack([self.faces, otherShape.faces + curPN])
             self.facesUV = np.vstack([self.facesUV, otherShape.facesUV + curUN])
             self.matNames += otherShape.matNames
             self.matStartId = np.append(self.matStartId, otherShape.matStartId + curFN).astype(int)
             num_new_mats = len(otherShape.matNames)
+            
+            # Add new shape_id entries to materialSubShapeIdx
+            if not hasattr(self, 'materialSubShapeIdx'):
+                self.materialSubShapeIdx = []
             self.materialSubShapeIdx += [shape_id] * num_new_mats
 
     def _addMorphCircle(self, center=(0,0,0), axisA = 1.0, axisB = 1.0, X=(1,0,0), Z=(0,0,1), circelRes = (50, 100), matName = "mat"):
@@ -1066,544 +1077,259 @@ class Cylinder(Shape):
                 i += 1
 
 
+import numpy as np
+
 class MultiShape(Shape):
     """
     Shape types:
-    0: Ellipsoid
-    1: Cube
-    2: Cylinder
-    
-    This implementation uses directional extents for precise overlap control.
+        0 – Ellipsoid
+        1 – Cube
+        2 – Cylinder
+
+    Placement strategy:
+        • for each primitive pick an area‑weighted random surface point
+        • translate primitives so all sampled points coincide at (0,0,0)
+        • if a new primitive’s AABB ends up entirely inside an existing one,
+          nudge it 2 % of its own size outward along centre→anchor
+        • after merging, centre the cluster, then apply one random spin
+          and a small random translation (jitter) to boost visual variety
     """
 
+
     def __init__(self,
-                 numShape=None, candShapes=[0,1,2], shape_counts=None,
-                 smoothPossibility=0.1, axisRange=(0.35, 1.55), heightRangeRate=(0, 0.2),
-                 translateRangeRate=(0.3, 0.5), rotateRange=(0, 180),
-                 translation_control=None, rotation_rng=None, translation_rng=None, size_rng=None):
-        super(MultiShape, self).__init__()
-        self.shape_counts = shape_counts
+                 numShape=None,
+                 candShapes=(0, 1, 2),
+                 shape_counts=None,
+                 smoothPossibility=0.1,
+                 axisRange=(0.35, 1.55),
+                 heightRangeRate=(0, 0.2),
+                 rotateRange=(0, 180),
+                 translation_control=None,
+                 rotation_rng=None,
+                 translation_rng=None,
+                 size_rng=None):
+        super().__init__()
+
+        self.shape_counts      = shape_counts
+        self.candShapes        = list(candShapes)
         self.smoothPossibility = smoothPossibility
-        self.axisRange = (0.7, 1.2) if axisRange == (0.35, 1.55) else axisRange
-        self.heightRangeRate = heightRangeRate
-        self.translateRangeRate = translateRangeRate
-        self.rotateRange = rotateRange
+        self.axisRange         = (0.7, 1.2) if axisRange == (0.35, 1.55) else axisRange
+        self.heightRangeRate   = heightRangeRate
+        self.rotateRange       = rotateRange
         self.translation_control = translation_control if translation_control is not None else 1.0
-        self.rotation_rng = rotation_rng if rotation_rng is not None else np.random
+
+        self.rotation_rng    = rotation_rng    if rotation_rng    is not None else np.random
         self.translation_rng = translation_rng if translation_rng is not None else np.random
-        self.size_rng = size_rng if size_rng is not None else np.random
-        self.candShapes = candShapes
-        self.materialSubShapeIdx = []
-        
-        if shape_counts is not None:
-            self.numShape = sum(shape_counts.values())
+        self.size_rng        = size_rng        if size_rng        is not None else np.random
+
+        # number of primitives
+        if self.shape_counts is not None:
+            self.numShape = sum(self.shape_counts.values())
+        elif numShape is not None:
+            self.numShape = int(numShape)
         else:
-            if numShape is not None:
-                self.numShape = numShape
-            else:
-                self.numShape = 6  # Default number of shapes
+            self.numShape = 6
+
+        self.materialSubShapeIdx = []
 
     def _create_shape(self, shape_type, axis_vals):
-        """Create a shape of the specified type and dimensions."""
         if shape_type == 0:
-            return Ellipsoid(axis_vals[0], axis_vals[1], axis_vals[2])
-        elif shape_type == 1:
-            return Cube(axis_vals[0], axis_vals[1], axis_vals[2])
-        elif shape_type == 2:
-            return Cylinder(axis_vals[0], axis_vals[1], axis_vals[2])
-        else:
-            raise ValueError(f"Unknown shape type: {shape_type}")
-    
+            return Ellipsoid(*axis_vals)
+        if shape_type == 1:
+            return Cube(*axis_vals)
+        if shape_type == 2:
+            return Cylinder(*axis_vals)
+        raise ValueError(f"Unknown shape type {shape_type}")
+
     def _get_shape_info(self, shape, position=None):
-        """Get comprehensive information about a shape including center and bounding box."""
         if position is None:
             position = np.zeros(3)
-            
-        # Get the actual points with position applied
-        points = shape.points + position
-        
-        # Calculate bounding box
-        min_point = np.min(points, axis=0)
-        max_point = np.max(points, axis=0)
-        
-        # Calculate center 
-        center = np.mean(points, axis=0)
-        
-        # Calculate dimensions and max diameter
-        dimensions = max_point - min_point
-        max_dim = np.max(dimensions)
-        
-        return {
-            'points': points,
-            'min': min_point,
-            'max': max_point,
-            'center': center,
-            'dimensions': dimensions,
-            'max_dim': max_dim
-        }
-    
-    def _get_shape_extent_along_direction(self, shape, position, direction):
-        """
-        Calculate the min and max extents of a shape along a given direction.
-        Returns min_val, max_val, and size (extent) along that direction.
-        """
-        # Get the shape points with position
-        points = shape.points + position
-        
-        # Project all points onto the direction
-        projections = np.dot(points, direction)
-        
-        # Find the min and max projections
-        min_val = np.min(projections)
-        max_val = np.max(projections)
-        
-        # Calculate the extent along the direction
-        extent = max_val - min_val
-        
-        return min_val, max_val, extent
-    
-    def _calculate_position_for_overlap(self, shape1, pos1, shape2, init_pos2, direction, target_overlap):
-        """
-        Calculate the position for shape2 to achieve the target overlap with shape1
-        along the given direction.
-        """
-        # Get extents of shape1 along direction
-        min1, max1, extent1 = self._get_shape_extent_along_direction(shape1, pos1, direction)
-        
-        # Get extents of shape2 along direction
-        min2, max2, extent2 = self._get_shape_extent_along_direction(shape2, init_pos2, direction)
-        
-        # Calculate the smaller extent
-        smaller_extent = min(extent1, extent2)
-        
-        # Calculate desired overlap distance
-        overlap_distance = smaller_extent * target_overlap
-        
-        # Calculate current distance between the shapes along the direction
-        # Shape1 is ahead of shape2 in the direction
-        current_distance = min1 - max2
-        
-        # Calculate desired distance for the target overlap
-        # To achieve overlap, we need (max2 + desired_distance) to be (overlap_distance) past min1
-        desired_distance = min1 + overlap_distance - max2
-        
-        # Calculate the final position adjustment
-        return init_pos2 + direction * desired_distance
-    
-    def _check_shapes_connected(self, shape1, shape2, pos1, pos2):
-        """Check if two shapes' bounding boxes overlap (are connected)."""
-        # Get shape info
-        shape1_info = self._get_shape_info(shape1, pos1)
-        shape2_info = self._get_shape_info(shape2, pos2)
-        
-        # Check for overlap in all dimensions
-        min1, max1 = shape1_info['min'], shape1_info['max']
-        min2, max2 = shape2_info['min'], shape2_info['max']
-        
-        overlap_x = min(max1[0], max2[0]) > max(min1[0], min2[0])
-        overlap_y = min(max1[1], max2[1]) > max(min1[1], min2[1])
-        overlap_z = min(max1[2], max2[2]) > max(min1[2], min2[2])
-        
-        # Return True if there's overlap in all dimensions
-        return overlap_x and overlap_y and overlap_z
-    
-    def _calculate_overlap_percentage(self, shape1, shape2, pos1, pos2):
-        """Calculate the approximate percentage of overlap between two shapes."""
-        # Get bounding boxes
-        shape1_info = self._get_shape_info(shape1, pos1)
-        shape2_info = self._get_shape_info(shape2, pos2)
-        
-        min1, max1 = shape1_info['min'], shape1_info['max']
-        min2, max2 = shape2_info['min'], shape2_info['max']
-        
-        # Calculate intersection volume
-        intersection_min = np.maximum(min1, min2)
-        intersection_max = np.minimum(max1, max2)
-        
-        # If no intersection in any dimension, return 0
-        if np.any(intersection_min >= intersection_max):
-            return 0.0
-        
-        # Calculate volumes
-        intersection_dimensions = intersection_max - intersection_min
-        intersection_volume = np.prod(intersection_dimensions)
-        
-        shape1_volume = np.prod(shape1_info['dimensions'])
-        shape2_volume = np.prod(shape2_info['dimensions'])
-        
-        # Return overlap percentage relative to the smaller shape
-        smaller_volume = min(shape1_volume, shape2_volume)
-        if smaller_volume <= 0:
-            return 0.0
-            
-        return intersection_volume / smaller_volume
-    
-    def _generate_unique_direction(self, used_directions=None, min_angle=30):
-        """Generate a random direction that's at least min_angle degrees away from any in used_directions."""
-        if used_directions is None or len(used_directions) == 0:
-            # Generate a completely random direction if no used directions
-            direction = self.translation_rng.uniform(-1, 1, 3)
-            if np.linalg.norm(direction) < 1e-6:
-                direction = np.array([0, 0, 1])  # Fallback
-            else:
-                direction = direction / np.linalg.norm(direction)
-            return direction
-        
-        # Try to generate a direction that satisfies the angle constraint
-        min_angle_rad = np.deg2rad(min_angle)
-        max_attempts = 100
-        
-        for _ in range(max_attempts):
-            direction = self.translation_rng.uniform(-1, 1, 3)
-            if np.linalg.norm(direction) < 1e-6:
-                continue
-                
-            direction = direction / np.linalg.norm(direction)
-            
-            # Check angle with all used directions
-            is_good = True
-            for used_dir in used_directions:
-                dot_product = np.abs(np.dot(direction, used_dir))
-                angle = np.arccos(min(1.0, max(-1.0, dot_product)))  # Clamp to valid range
-                
-                if angle < min_angle_rad:
-                    is_good = False
-                    break
-            
-            if is_good:
-                return direction
-        
-        # If we can't find a good direction, create one perpendicular to the last used direction
-        last_dir = used_directions[-1]
-        perp_dir = np.cross(last_dir, np.array([0, 0, 1]))
-        if np.linalg.norm(perp_dir) < 1e-6:
-            perp_dir = np.cross(last_dir, np.array([1, 0, 0]))
-            
-        return perp_dir / np.linalg.norm(perp_dir)
-    
-    def _find_good_position_with_target_overlap(self, shape1, pos1, shape2, direction, target_overlap):
-        """Use binary search to find a position that gives target_overlap between shapes."""
-        # First place shape2 at center
-        shape2_info = self._get_shape_info(shape2)
-        initial_position = -shape2_info['center']  # Center at origin
-        
-        # Get shape extents in direction
-        _, max1, extent1 = self._get_shape_extent_along_direction(shape1, pos1, direction)
-        min2, _, extent2 = self._get_shape_extent_along_direction(shape2, initial_position, -direction)
-        
-        # Calculate approximate starting distance
-        smaller_extent = min(extent1, extent2)
-        overlap_distance = smaller_extent * target_overlap
-        
-        # Position where shapes just touch
-        touch_distance = max1 + min2
-        
-        # Position with desired overlap
-        start_distance = touch_distance - overlap_distance
-        
-        # Position shape2
-        test_position = initial_position + direction * start_distance
-        
-        # Now use binary search to refine this position
-        min_distance = start_distance * 0.5  # Allow more overlap
-        max_distance = start_distance * 1.2  # Allow less overlap
-        
-        best_position = test_position
-        best_error = float('inf')
-        
-        for _ in range(100):  # 10 iterations of binary search
-            # Check current overlap
-            current_overlap = self._calculate_overlap_percentage(shape1, shape2, pos1, test_position)
-            
-            # Update best if this is closer to target
-            error = abs(current_overlap - target_overlap)
-            if error < best_error:
-                best_error = error
-                best_position = test_position.copy()
-                
-                if error < 0.02:  # Close enough
-                    break
-            
-            # Adjust distance based on current overlap
-            if current_overlap < target_overlap:
-                # Need more overlap, reduce distance
-                max_distance = start_distance
-            else:
-                # Need less overlap, increase distance
-                min_distance = start_distance
-            
-            # Try new midpoint
-            start_distance = (min_distance + max_distance) / 2
-            test_position = initial_position + direction * start_distance
-        
-        return best_position, best_error
-        
+        pts   = shape.points + position
+        return dict(points      = pts,
+                    center      = pts.mean(0),
+                    min         = pts.min(0),
+                    max         = pts.max(0),
+                    dimensions  = pts.max(0) - pts.min(0))
+
+    def _spin_about_point(self, shape, pivot, rng):
+        """Rotate a shape in‑place around a pivot, keeping that pivot fixed."""
+        ang = rng.uniform(0.0, 360.0, 3)          # XYZ Euler in degrees
+        shape.translate(-pivot)
+        shape.rotate((1, 0, 0), ang[0])
+        shape.rotate((0, 1, 0), ang[1])
+        shape.rotate((0, 0, 1), ang[2])
+        shape.translate(pivot)
+
+
+    def _sample_random_point(self, shape, rng):
+        """Uniform surface sampler."""
+        faces = shape.faces            # (N,3) 1‑based indices
+        verts = shape.points           # (M,3)
+
+        v0 = verts[faces[:, 0] - 1]
+        v1 = verts[faces[:, 1] - 1]
+        v2 = verts[faces[:, 2] - 1]
+        areas = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)
+
+        f_idx = np.searchsorted(np.cumsum(areas), rng.random() * areas.sum())
+
+        u = rng.random()
+        v = rng.random()
+        if u + v > 1.0:                            # fold back into simplex
+            u, v = 1.0 - u, 1.0 - v
+        w = 1.0 - u - v
+        return u * v0[f_idx] + v * v1[f_idx] + w * v2[f_idx]
+
+    def _aabb_inside(self, min_a, max_a, min_b, max_b, eps=1e-4):
+        return np.all(min_a >= min_b - eps) and np.all(max_a <= max_b + eps)
+
+
     def genShape(self, no_hf=False):
-        """Generate shapes with precise directional overlap control."""
-        super(MultiShape, self).__init__()
-        self.materialSubShapeIdx = []
-        
-        # Initialize return value lists
-        primitive_ids = []
-        axis_vals_s = []
-        translations = []
-        translation1s = []
-        rotations = []
-        rotation1s = []
-        height_fields_s = []
-        
-        # Create all shape specifications
-        shapes_to_create = []
-        
-        # Determine the shapes to create based on shape_counts or numShape
-        if self.shape_counts is not None:
-            for shape_type, count in self.shape_counts.items():
-                for _ in range(count):
-                    # Get base axis values (normal proportions)
-                    axisVals = self.size_rng.uniform(self.axisRange[0], self.axisRange[1], 3)
-                    
-                    # Every shape has a chance to be stretched (not just one)
-                    should_stretch = self.size_rng.random() < 0.8
-                    
-                    if should_stretch:
-                        # Choose a random axis to stretch (0=x, 1=y, 2=z)
-                        stretch_axis = self.size_rng.randint(0, 3)
-                        
-                        # Create a stretching factor between 1.5 and 3.0
-                        stretch_factor = self.size_rng.uniform(1.5, 2.2)
-                        
-                        # Apply the stretch to the chosen axis
-                        axisVals[stretch_axis] *= stretch_factor
-                        
-                        # Optionally thin the other axes
-                        thin_factor = self.size_rng.uniform(0.2, 0.5)
-                        for i in range(3):
-                            if i != stretch_axis:
-                                axisVals[i] *= thin_factor
+        super().genShape()               # clear parent buffers
+        rng_r, rng_t, rng_s = self.rotation_rng, self.translation_rng, self.size_rng
 
+
+        def _random_axes():
+            axis = rng_s.uniform(self.axisRange[0], self.axisRange[1], 3)
+            
+            if rng_s.rand() < 0.9:  # 90% chance of stretching
+                stretch_type = rng_s.rand()
+                
+                if stretch_type < 0.5:  # 50% of 90% = 45% chance - stretch one axis
+                    sa = rng_s.randint(0, 3)
+                    sf = rng_s.uniform(1.2, 2.2)
+                    tf = rng_s.uniform(0.2, 0.6)
                     
-                    # Generate height fields
-                    hfs = []
-                    minA = axisVals.min() * 2.0
-                    maxA = axisVals.max() * 2.0
-                    maxH = self.size_rng.uniform(self.heightRangeRate[0] * minA, self.heightRangeRate[1] * minA, 6)
+                    # Stretch one dimension
+                    axis[sa] *= sf
+                    # Make it thinner in other dimensions
+                    axis[[i for i in range(3) if i != sa]] *= tf
+                
+                else:  # 50% of 90% = 45% chance - stretch two axes
+
+                    thin_axis = rng_s.randint(0, 3)
+                    stretch_axes = [i for i in range(3) if i != thin_axis]
                     
-                    for ih in range(6):
-                        smoothR = self.size_rng.uniform(0, 1, 1)[0]
-                        if smoothR <= self.smoothPossibility or maxH[ih] == 0:
-                            hf = np.zeros((36, 36))
-                        else:
-                            hfg = HeightFieldCreator(maxHeight=(-maxH[ih], maxH[ih]), rng=self.size_rng)
-                            hf = hfg.genHeightField()
-                        hfs.append(hf)
-                    hfs = np.reshape(hfs, (6,) + hf.shape)
-                    if no_hf:
-                        hfs = np.zeros_like(hfs)
+
+                    sf1 = rng_s.uniform(1.2, 2.0)
+                    sf2 = rng_s.uniform(1.2, 2.0)
+                    tf = rng_s.uniform(0.3, 0.6)  # Thinning factor for the remaining axis
                     
-                    # Generate rotation - Full range for diversity
-                    rotation = self.rotation_rng.uniform(self.rotateRange[0], self.rotateRange[1], 3)
+                    # Apply stretching to the selected axes
+                    axis[stretch_axes[0]] *= sf1
+                    axis[stretch_axes[1]] *= sf2
                     
-                    # Add to the list of shapes to create
-                    shapes_to_create.append({
-                        'type': shape_type,
-                        'axis_vals': axisVals,
-                        'height_fields': hfs,
-                        'rotation': rotation
-                    })
+                    # Apply thinning to the remaining axis
+                    axis[thin_axis] *= tf
+
+                
+            return axis
+
+        specs = []
+        if self.shape_counts:
+            for stype, cnt in self.shape_counts.items():
+                specs.extend([dict(type=stype)] * cnt)
         else:
-            # Random selection based on numShape
             for _ in range(self.numShape):
-                # Randomly select a shape type
-                shape_type = self.rotation_rng.choice(self.candShapes)
-                
-                # Get base axis values (normal proportions)
-                axisVals = self.size_rng.uniform(self.axisRange[0], self.axisRange[1], 3)
-                
-                # Every shape has a chance to be stretched
-                should_stretch = self.size_rng.random() < 0.8
-                
-                if should_stretch:
-                    # Choose a random axis to stretch (0=x, 1=y, 2=z)
-                    stretch_axis = self.size_rng.randint(0, 3)
-                    
-                    # Create a stretching factor between 1.5 and 3.0
-                    stretch_factor = self.size_rng.uniform(2.2, 3.5)
-                    
-                    # Apply the stretch to the chosen axis
-                    axisVals[stretch_axis] *= stretch_factor
-                    
-                    # Optionally thin the other axes
-                    thin_factor = self.size_rng.uniform(0.5, 0.8)
-                    for i in range(3):
-                        if i != stretch_axis:
-                            axisVals[i] *= thin_factor
-                
-                # Generate height fields
-                hfs = []
-                minA = axisVals.min() * 2.0
-                maxA = axisVals.max() * 2.0
-                maxH = self.size_rng.uniform(self.heightRangeRate[0] * minA, self.heightRangeRate[1] * minA, 6)
-                
-                for ih in range(6):
-                    smoothR = self.size_rng.uniform(0, 1, 1)[0]
-                    if smoothR <= self.smoothPossibility or maxH[ih] == 0:
-                        hf = np.zeros((36, 36))
-                    else:
-                        hfg = HeightFieldCreator(maxHeight=(-maxH[ih], maxH[ih]), rng=self.size_rng)
-                        hf = hfg.genHeightField()
-                    hfs.append(hf)
-                hfs = np.reshape(hfs, (6,) + hf.shape)
-                if no_hf:
-                    hfs = np.zeros_like(hfs)
-                
-                # Generate rotation
-                rotation = self.rotation_rng.uniform(self.rotateRange[0], self.rotateRange[1], 3)
-                
-                # Add to the list of shapes to create
-                shapes_to_create.append({
-                    'type': shape_type,
-                    'axis_vals': axisVals,
-                    'height_fields': hfs,
-                    'rotation': rotation
-                })
-        
-        # Create all shapes with rotations applied
-        created_shapes = []
-        
-        # First, just create all the shapes (rotated and with height fields applied)
-        for i, shape_spec in enumerate(shapes_to_create):
-            # Create the shape
-            subShape = self._create_shape(shape_spec['type'], shape_spec['axis_vals'])
-            subShape.genShape(matName=f"mat_shape{i}")
-            subShape.applyHeightField(shape_spec['height_fields'])
-            
-            # Apply rotation
-            subShape.rotate((1, 0, 0), shape_spec['rotation'][0])
-            subShape.rotate((0, 1, 0), shape_spec['rotation'][1])
-            subShape.rotate((0, 0, 1), shape_spec['rotation'][2])
-            
-            created_shapes.append(subShape)
-        
-        # Initialize all shapes centered at the origin
-        positions = []
-        used_directions = []
-        
-        # Now position shapes properly
-        for i in range(len(created_shapes)):
-            # First shape stays at origin
-            if i == 0:
-                # Center first shape at origin
-                shape0_info = self._get_shape_info(created_shapes[0])
-                center0 = shape0_info['center']
-                position = -center0
-                created_shapes[0].translate(position)
-                positions.append(position)
-                self.addShape(created_shapes[0], 0)
-                continue
-            
-            # For subsequent shapes:
-            # 1. Generate a random direction
-            direction = self._generate_unique_direction(used_directions)
-            used_directions.append(direction)
-            
-            # 2. Choose a random target overlap percentage between 20% and 40%
-            target_overlap = self.translation_rng.uniform(0.25, 0.45)
-            print(f"Shape {i}: Target overlap is {target_overlap:.2f} (3-55% range)")
-            
-            # 3. Choose which existing shape to connect to
-            #connect_to = self.size_rng.randint(0, i)
-            connect_to = 0
+                specs.append(dict(type=rng_r.choice(self.candShapes)))
 
-            # 4. Find a position that gives the target overlap
-            position, error = self._find_good_position_with_target_overlap(
-                created_shapes[connect_to], positions[connect_to],
-                created_shapes[i], direction, target_overlap
-            )
-            
-            print(f"Shape {i}: Connected to shape {connect_to} with {target_overlap:.2f} target overlap, {error:.2f} error")
-            
-            # 5. Move the shape to final position and add to combined shape
-            created_shapes[i].translate(position)
-            positions.append(position)
-            self.addShape(created_shapes[i], i)
+        for spec in specs:
+            spec['axis'] = _random_axes()
+            # h‑fields
+            hfs = []
+            minA = spec['axis'].min() * 2.0
+            maxH = rng_s.uniform(self.heightRangeRate[0] * minA,
+                                self.heightRangeRate[1] * minA, 6)
+            for m in maxH:
+                if no_hf or m == 0 or rng_s.rand() < self.smoothPossibility:
+                    hfs.append(np.zeros((36, 36)))
+                else:
+                    hfg = HeightFieldCreator(maxHeight=(-m, m), rng=rng_s)
+                    hfs.append(hfg.genHeightField())
+            spec['hfs'] = np.asarray(hfs)
+            spec['rot'] = rng_r.uniform(self.rotateRange[0],
+                                        self.rotateRange[1], 3)
+
+
+        shapes = []
+        for i, spec in enumerate(specs):
+            shp = self._create_shape(spec['type'], spec['axis'])
+            shp.genShape(f"mat_{i}")
+            shp.applyHeightField(spec['hfs'])
+            shp.rotate((1, 0, 0), spec['rot'][0])
+            shp.rotate((0, 1, 0), spec['rot'][1])
+            shp.rotate((0, 0, 1), spec['rot'][2])
+            shapes.append(shp)
+
+
+        positions = []
         
-        # Verify all shapes are connected to at least one other shape
-        for i in range(1, len(created_shapes)):
-            connected_to_any = False
-            for j in range(len(created_shapes)):
-                if i != j:
-                    if self._check_shapes_connected(
-                        created_shapes[i], created_shapes[j], 
-                        positions[i], positions[j]
-                    ):
-                        connected_to_any = True
-                        break
+
+        anchor0 = self._sample_random_point(shapes[0], rng_t)
+        shapes[0].translate(-anchor0)
+        positions.append(-anchor0)
+        self.addShape(shapes[0], 0)
+        
+
+        assembled = Shape()
+        assembled.points = np.copy(shapes[0].points)
+        assembled.faces = np.copy(shapes[0].faces)
+        
+
+        for i in range(1, len(shapes)):
+
+            connection_point = self._sample_random_point(assembled, rng_t)
             
-            if not connected_to_any:
-                print(f"Warning: Shape {i} is not connected to any other shape. Applying fix.")
-                
-                # Find closest shape
-                closest_shape = 0
-                closest_distance = float('inf')
-                
-                shape_i_center = self._get_shape_info(created_shapes[i], positions[i])['center']
-                
-                for j in range(len(created_shapes)):
-                    if i != j:
-                        shape_j_center = self._get_shape_info(created_shapes[j], positions[j])['center']
-                        dist = np.linalg.norm(shape_i_center - shape_j_center)
-                        
-                        if dist < closest_distance:
-                            closest_distance = dist
-                            closest_shape = j
-                
-                # Move shape i toward shape closest_shape until they connect
-                direction = self._get_shape_info(created_shapes[closest_shape], positions[closest_shape])['center'] - shape_i_center
-                direction = direction / np.linalg.norm(direction)
-                
-                step_size = min(created_shapes[i].points.max(axis=0) - created_shapes[i].points.min(axis=0)) * 0.1
-                max_steps = 20
-                
-                for _ in range(max_steps):
-                    # Move shape i toward closest_shape
-                    movement = direction * step_size
-                    positions[i] += movement
-                    created_shapes[i].translate(movement)
-                    
-                    # Check if they're now connected
-                    if self._check_shapes_connected(
-                        created_shapes[i], created_shapes[closest_shape], 
-                        positions[i], positions[closest_shape]
-                    ):
-                        print(f"  Fixed: Shape {i} now connected to shape {closest_shape}")
-                        break
-        
-        # Fill the return value lists
-        for i, shape_spec in enumerate(shapes_to_create):
-            primitive_ids.append(shape_spec['type'])
-            axis_vals_s.append(shape_spec['axis_vals'])
-            translations.append(positions[i])
-            rotations.append(shape_spec['rotation'])
-            height_fields_s.append(shape_spec['height_fields'])
-            translation1s.append(np.zeros(3))
-            rotation1s.append(np.zeros(3))
-        
-        # Final centering of the entire structure
+
+            shape_point = self._sample_random_point(shapes[i], rng_t)
+            
+
+            trans = connection_point - shape_point
+            shapes[i].translate(trans)
+            positions.append(trans)
+            
+
+            self._spin_about_point(shapes[i], connection_point, rng_r)
+            
+            # Add to self for final output
+            self.addShape(shapes[i], i)
+            
+
+            points_offset = len(assembled.points)
+            faces_offset = len(assembled.faces)
+            
+            # Add points from the new shape
+            new_points = shapes[i].points.copy()  # Already translated
+            assembled.points = np.vstack([assembled.points, new_points])
+            
+            # Add faces from the new shape, updating indices
+            new_faces = shapes[i].faces.copy()
+            new_faces = new_faces + points_offset 
+            
+            if len(assembled.faces) > 0 and len(new_faces) > 0:
+                assembled.faces = np.vstack([assembled.faces, new_faces])
+            elif len(new_faces) > 0:
+                assembled.faces = new_faces
+
+
+        primitive_ids, axis_vals_s, translations = [], [], []
+        translation1s, rotations = [], []
+        rotation1s, height_fields_s = [], []
+
+        for i, spec in enumerate(specs):
+            primitive_ids  .append(spec['type'])
+            axis_vals_s    .append(spec['axis'])
+            translations   .append(positions[i])
+            translation1s  .append(np.zeros(3))
+            rotations      .append(spec['rot'])
+            rotation1s     .append(np.zeros(3))
+            height_fields_s.append(spec['hfs'])
+
+
         self.reCenter()
-        
-        # Print final connection map
-        print("\nFinal connection map:")
-        for i in range(len(created_shapes)):
-            connected_to = []
-            for j in range(len(created_shapes)):
-                if i != j and self._check_shapes_connected(
-                    created_shapes[i], created_shapes[j],
-                    positions[i], positions[j]
-                ):
-                    connected_to.append(j)
-            print(f"Shape {i} is connected to shapes: {connected_to}")
-        
+
         return primitive_ids, axis_vals_s, translations, translation1s, rotations, rotation1s, height_fields_s
+
 
 def createShapes(outFolder, shapeNum, subObjNum = 6):
     if not os.path.isdir(outFolder):
@@ -1835,7 +1561,7 @@ if __name__ == "__main__":
     if args.rotation_seed is not None:
         rotation_rng = np.random.RandomState(args.rotation_seed)
     else:
-        rotation_rng = np.random 
+        rotation_rng = np.random
         
     if args.translation_seed is not None:
         translation_rng = np.random.RandomState(args.translation_seed)
@@ -1860,7 +1586,7 @@ if __name__ == "__main__":
         sub_obj_num_poss=args.sub_obj_num_poss,
         candShapes=args.cand_shapes,
         bMultiObj=False,
-        bPermuteMat=True,
+        bPermuteMat=False,
         bScaleMesh=True,
         bMaxDimRange=[0.3, 0.45],
         smooth_probability=args.smooth_probability,
